@@ -22,6 +22,14 @@ export BOT_TOKEN="ваш_токен"
 python -m app.bot
 ```
 
+## Монолитный файл
+
+Если нужен единый файл, используйте `bot_monolith.py`:
+
+```bash
+python bot_monolith.py
+```
+
 ## Функциональность
 
 - Поддержка режимов Light и Expert.
