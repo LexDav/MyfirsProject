@@ -14,6 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
@@ -294,16 +295,39 @@ def mode_keyboard() -> ReplyKeyboardMarkup:
 
 router = Router()
 user_modes: dict[int, str] = {}
+welcome_message_ids: dict[int, int] = {}
 
 
 @router.message(Command("start"))
 async def start(message: Message, state: FSMContext) -> None:
-    await asyncio.to_thread(ensure_user, DB_PATH, message.chat.id, message.from_user.username if message.from_user else None)
+    await asyncio.to_thread(
+        ensure_user,
+        DB_PATH,
+        message.chat.id,
+        message.from_user.username if message.from_user else None,
+    )
     await state.clear()
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
+    existing_message_id = welcome_message_ids.get(message.chat.id)
+    if existing_message_id:
+        await message.answer("Приветственное сообщение уже показано выше. Выберите режим: Light или Expert.", reply_markup=mode_keyboard())
+        return
+
     sent = await message.answer(WELCOME_AND_COMMANDS, reply_markup=mode_keyboard())
+    welcome_message_ids[message.chat.id] = sent.message_id
+
     try:
         await message.bot.pin_chat_message(message.chat.id, sent.message_id, disable_notification=True)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
+
+
+@router.message(F.pinned_message)
+async def cleanup_pin_service_message(message: Message) -> None:
+    """Try to remove service message created by pinning."""
+    try:
+        await message.delete()
     except (TelegramBadRequest, TelegramForbiddenError):
         pass
 
@@ -498,7 +522,7 @@ async def history(message: Message) -> None:
         await message.answer(chunk)
 
 
-@router.message()
+@router.message(F.text)
 async def fallback(message: Message) -> None:
     mode = user_modes.get(message.chat.id)
     if mode == "expert":
