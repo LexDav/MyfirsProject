@@ -150,7 +150,7 @@ WELCOME_AND_COMMANDS = (
 )
 
 KEYWORD_MAP: list[tuple[str, str, str]] = [
-    ("мышь", "8471602009", "Части машин и аппаратов для обработки данных"),
+    ("машина", "8471602009", "Части машин и аппаратов для обработки данных"),
     ("аккумулятор", "8507208008", "Аккумуляторы свинцово-кислотные, прочие"),
     ("электромобиль", "8703800005", "Автомобили с гибридным приводом"),
     ("дерево", "4403990000", "Древесина необработанная, прочая"),
@@ -335,16 +335,28 @@ async def start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
+    target_message_id: int | None = None
     existing_message_id = welcome_message_ids.get(message.chat.id)
-    if existing_message_id:
-        await message.answer("Приветственное сообщение уже показано выше. Выберите режим: Light или Expert.", reply_markup=mode_keyboard())
-        return
 
-    sent = await message.answer(WELCOME_AND_COMMANDS, reply_markup=mode_keyboard())
-    welcome_message_ids[message.chat.id] = sent.message_id
+    if existing_message_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=existing_message_id,
+                text=WELCOME_AND_COMMANDS,
+                reply_markup=mode_keyboard(),
+            )
+            target_message_id = existing_message_id
+        except (TelegramBadRequest, TelegramForbiddenError):
+            target_message_id = None
+
+    if target_message_id is None:
+        sent = await message.answer(WELCOME_AND_COMMANDS, reply_markup=mode_keyboard())
+        target_message_id = sent.message_id
+        welcome_message_ids[message.chat.id] = sent.message_id
 
     try:
-        await message.bot.pin_chat_message(message.chat.id, sent.message_id, disable_notification=True)
+        await message.bot.pin_chat_message(message.chat.id, target_message_id, disable_notification=True)
     except (TelegramBadRequest, TelegramForbiddenError):
         pass
 
@@ -418,11 +430,9 @@ async def light_check_code(message: Message, state: FSMContext) -> None:
         await state.set_state(LightStates.code_input)
         await message.answer("Введите код ТН ВЭД (10 цифр).")
         return
-    if answer in {"нет", "no", "n"}:
-        await state.set_state(LightStates.name)
-        await message.answer("Укажите полное наименование товара.")
-        return
-    await message.answer('Пожалуйста, ответьте "Да" или "Нет".')
+
+    await state.clear()
+    await message.answer("Диалог завершён. Данные сброшены.")
 
 
 @router.message(LightStates.code_input)
