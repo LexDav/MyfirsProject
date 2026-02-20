@@ -2,9 +2,9 @@ import asyncio
 import json
 import logging
 import os
-import random
 import re
 import sqlite3
+from functools import lru_cache
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Optional
@@ -34,6 +34,7 @@ from aiogram.types import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "bot.db")
+RU84_PATH = os.getenv("RU84_PATH", "ru.84_2022_21.09.2025.md")
 
 # OpenAI (опционально)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -303,6 +304,54 @@ def tnved_random(db_path: str, limit: int = 5) -> list[tuple[str, str]]:
     return [(r[0], r[1]) for r in rows]
 
 
+@lru_cache(maxsize=1)
+def load_ru84_codes(path: str = RU84_PATH) -> dict[str, tuple[str, str]]:
+    """Загружает из ru.84 словарь: 10-значный код -> (наименование, ставка)."""
+    mapping: dict[str, tuple[str, str]] = {}
+
+    if not os.path.exists(path):
+        logger.warning("Файл с тарифами не найден: %s", path)
+        return mapping
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith("|"):
+                    continue
+
+                parts = [p.strip() for p in line.strip("|").split("|")]
+                if len(parts) < 4:
+                    continue
+
+                # пропускаем заголовки и разделители таблиц
+                if parts[0].lower() in {"код тн вэд", "-"}:
+                    continue
+
+                code_raw = parts[0]
+                code10 = re.sub(r"\D", "", code_raw)
+                if len(code10) != 10:
+                    continue
+
+                title = parts[1].strip() or "(наименование отсутствует в ru.84)"
+                duty_rate = parts[3].strip() or "не указана"
+                mapping[code10] = (title, duty_rate)
+    except OSError as e:
+        logger.error("Ошибка чтения файла %s: %s", path, e)
+
+    return mapping
+
+
+def tnved_lookup_with_rate(db_path: str, code: str) -> tuple[str, str]:
+    """Возвращает (наименование, ставка) по коду: сначала ru.84, затем БД."""
+    ru84 = load_ru84_codes()
+    if code in ru84:
+        return ru84[code]
+
+    title = tnved_get_by_code(db_path, code) or "Код не найден"
+    return title, "нет данных в ru.84"
+
+
 def _tokenize(text: str) -> list[str]:
     # примитивная токенизация: слова/цифры, длина >= 3
     raw = re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", (text or "").lower())
@@ -519,9 +568,9 @@ def classify_text_with_db(db_path: str, text: str) -> list[ClassificationResult]
 
     # 1) если пользователь ввёл ровно 10 цифр
     if raw.isdigit() and len(raw) == 10:
-        title = tnved_get_by_code(db_path, raw)
-        if title:
-            return [ClassificationResult(raw, title, 0.92, "Код найден в классификаторе (БД)")]
+        title, duty = tnved_lookup_with_rate(db_path, raw)
+        if title != "Код не найден":
+            return [ClassificationResult(raw, title, 0.92, f"Код найден. Ставка: {duty}")]
         return [ClassificationResult(raw, "Код не найден в вашей БД (tnved).", 0.35, "Нет записи в таблице tnved")]
 
     # 2) если код "спрятан" в тексте
@@ -532,9 +581,9 @@ def classify_text_with_db(db_path: str, text: str) -> list[ClassificationResult]
         code10 = m.group(1)
         group = int(code10[:2])
         if 1 <= group <= 97:
-            title = tnved_get_by_code(db_path, code10)
-            if title:
-                return [ClassificationResult(code10, title, 0.90, "Код найден в тексте и подтверждён БД")]
+            title, duty = tnved_lookup_with_rate(db_path, code10)
+            if title != "Код не найден":
+                return [ClassificationResult(code10, title, 0.90, f"Код найден в тексте. Ставка: {duty}")]
             return [ClassificationResult(code10, "Код найден в тексте, но отсутствует в БД (tnved).", 0.35, "Нет записи")]
 
     # 3) иначе — код не обнаружен, нужен подбор
@@ -549,11 +598,28 @@ def classify_text_with_db(db_path: str, text: str) -> list[ClassificationResult]
 
 
 def format_results(results: list[ClassificationResult]) -> str:
-    lines: list[str] = []
+    def conf_label(conf: float) -> str:
+        if conf >= 0.8:
+            return "Высокая"
+        if conf >= 0.6:
+            return "Средняя"
+        return "Низкая"
+
+    lines: list[str] = [
+        "| Код | Наименование позиции | Вероятность | Ставка пошлины |",
+        "|-----|---------------------|-------------|----------------|",
+    ]
+
     for r in results:
-        pct = int(r.confidence * 100 + 0.5)
-        lines.append(f"Код {r.code} — {r.title} (вероятность {pct}%).\nОбоснование: {r.explanation}")
-    return "\n\n".join(lines) + LEGAL_DISCLAIMER
+        title = r.title.replace("|", "/")
+        duty = "—"
+        if re.fullmatch(r"\d{10}", r.code) and r.code != "0000000000":
+            ru_title, duty = tnved_lookup_with_rate(DB_PATH, r.code)
+            title = ru_title.replace("|", "/")
+        lines.append(f"| {r.code} | {title} | {conf_label(r.confidence)} | {duty} |")
+
+    reasons = "\n".join([f"• {r.code}: {r.explanation}" for r in results])
+    return "\n".join(lines) + f"\n\nОбоснование:\n{reasons}" + LEGAL_DISCLAIMER
 
 
 def assess_risk(confidence: float) -> str:
@@ -587,9 +653,16 @@ async def suggest_codes_flow(message: Message, user_text: str) -> None:
 
     ranked = await asyncio.to_thread(llm_rank_candidates, user_text, candidates, 5)
 
-    lines = ["Возможные коды по вашему описанию (предварительно):"]
+    lines = [
+        "Возможные коды по вашему описанию (предварительно):",
+        "| Код | Наименование позиции | Ставка пошлины | Почему |",
+        "|-----|---------------------|----------------|--------|",
+    ]
     for code, title, reason in ranked:
-        lines.append(f"{code} — {title}\nПочему: {reason}")
+        ru_title, duty = await asyncio.to_thread(tnved_lookup_with_rate, DB_PATH, code)
+        safe_title = (ru_title or title).replace("|", "/")
+        safe_reason = reason.replace("|", "/")
+        lines.append(f"| {code} | {safe_title} | {duty} | {safe_reason} |")
 
     lines.append(
         "\nВажно: это предварительная подсказка по описанию. "
@@ -740,9 +813,9 @@ async def check_code(message: Message, command: CommandObject) -> None:
         await message.answer("Код должен содержать ровно 10 цифр. Пример: /check 8408101100")
         return
 
-    title = await asyncio.to_thread(tnved_get_by_code, DB_PATH, code)
-    if title:
-        results = [ClassificationResult(code, title, 0.92, "Код найден в классификаторе (БД)")]
+    title, duty = await asyncio.to_thread(tnved_lookup_with_rate, DB_PATH, code)
+    if title != "Код не найден":
+        results = [ClassificationResult(code, title, 0.92, f"Код найден. Ставка: {duty}")]
     else:
         results = [ClassificationResult(code, "Код не найден в вашей БД (tnved).", 0.35, "Нет записи в tnved")]
 
