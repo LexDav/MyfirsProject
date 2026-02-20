@@ -380,10 +380,20 @@ async def mode_command(message: Message) -> None:
     await message.answer("Выберите режим: Light или Expert.", reply_markup=mode_keyboard())
 
 
+async def start_light_questionnaire(message: Message, state: FSMContext) -> None:
+    """Start Light questionnaire flow immediately."""
+    await state.set_state(LightStates.check_code)
+    await message.answer("Хотите проверить правильность имеющегося кода ТН ВЭД? (Да/Нет)")
+
+
 @router.message(F.text.lower().in_({"light", "expert"}))
-async def set_mode(message: Message) -> None:
-    user_modes[message.chat.id] = message.text.lower()
+async def set_mode(message: Message, state: FSMContext) -> None:
+    selected_mode = (message.text or "").lower()
+    user_modes[message.chat.id] = selected_mode
     await message.answer(f"Режим установлен: {message.text}.")
+
+    if selected_mode == "light":
+        await start_light_questionnaire(message, state)
 
 
 @router.message(Command("analysis"))
@@ -414,8 +424,7 @@ async def classify_command(message: Message, state: FSMContext, command: Command
         return
 
     if mode == "light":
-        await state.set_state(LightStates.check_code)
-        await message.answer("Хотите проверить правильность имеющегося кода ТН ВЭД? (Да/Нет)")
+        await start_light_questionnaire(message, state)
         return
 
     if mode is None:
