@@ -601,6 +601,23 @@ async def suggest_codes_flow(message: Message, user_text: str) -> None:
     await message.answer("\n\n".join(lines))
 
 
+async def process_expert_text(message: Message, text: str, mode_for_history: str) -> None:
+    """Единый сценарий для Expert: точный код из текста или подбор кандидатов."""
+    results = await asyncio.to_thread(classify_text_with_db, DB_PATH, text)
+
+    # Если пользователь явно указал 10-значный код — показываем точечную проверку.
+    if results and results[0].code != "0000000000":
+        response = format_results(results)
+        risk = assess_risk(results[0].confidence)
+        await asyncio.to_thread(save_query, DB_PATH, message.chat.id, mode_for_history, text, response)
+        await message.answer(f"{response}\n\nОценка риска неверной классификации: {risk}.")
+        return
+
+    # Иначе сразу переходим к подбору (без промежуточного сообщения-заглушки).
+    await suggest_codes_flow(message, text)
+    await asyncio.to_thread(save_query, DB_PATH, message.chat.id, mode_for_history, text, "suggest_codes_flow")
+
+
 # =========================
 # UI helpers
 # =========================
@@ -700,6 +717,7 @@ async def mode_command(message: Message) -> None:
 @router.message(F.text.lower().in_({"light", "expert"}))
 async def set_mode(message: Message, state: FSMContext) -> None:
     selected_mode = (message.text or "").lower()
+    await state.clear()
     await asyncio.to_thread(set_user_mode, DB_PATH, message.chat.id, selected_mode)
     await message.answer(f"Режим установлен: {message.text}.")
     if selected_mode == "light":
@@ -778,15 +796,7 @@ async def classify_command(message: Message, state: FSMContext, command: Command
             )
             return
 
-        results = await asyncio.to_thread(classify_text_with_db, DB_PATH, text)
-        response = format_results(results)
-        risk = assess_risk(results[0].confidence)
-        await asyncio.to_thread(save_query, DB_PATH, message.chat.id, mode or "quick", text, response)
-
-        await message.answer(f"{response}\n\nОценка риска неверной классификации: {risk}.")
-        # если точного кода нет — подскажем варианты
-        if results[0].code == "0000000000":
-            await suggest_codes_flow(message, text)
+        await process_expert_text(message, text, mode or "quick")
         return
 
     if mode == "light":
@@ -932,14 +942,7 @@ async def fallback(message: Message) -> None:
             )
             return
 
-        results = await asyncio.to_thread(classify_text_with_db, DB_PATH, text)
-        response = format_results(results)
-        risk = assess_risk(results[0].confidence)
-        await asyncio.to_thread(save_query, DB_PATH, message.chat.id, "expert", text, response)
-
-        await message.answer(f"{response}\n\nОценка риска неверной классификации: {risk}.")
-        if results[0].code == "0000000000":
-            await suggest_codes_flow(message, text)
+        await process_expert_text(message, text, "expert")
         return
 
     await message.answer("Не удалось распознать команду. Используйте /help.")
