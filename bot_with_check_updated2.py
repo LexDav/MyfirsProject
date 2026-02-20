@@ -693,17 +693,29 @@ async def help_command(message: Message) -> None:
 
 
 @router.message(Command("mode"))
-async def mode_command(message: Message) -> None:
+async def mode_command(message: Message, state: FSMContext) -> None:
+    # Явно сбрасываем незавершённый FSM-сценарий (например, шаги Light-опросника),
+    # чтобы переключение режима всегда было предсказуемым.
+    await state.clear()
     await message.answer("Выберите режим: Light или Expert.", reply_markup=mode_keyboard())
 
 
 @router.message(F.text.lower().in_({"light", "expert"}))
 async def set_mode(message: Message, state: FSMContext) -> None:
     selected_mode = (message.text or "").lower()
+    # При смене режима обязательно очищаем старое состояние, чтобы исключить
+    # конфликт между активным Light-state и последующим вводом в Expert.
+    await state.clear()
     await asyncio.to_thread(set_user_mode, DB_PATH, message.chat.id, selected_mode)
     await message.answer(f"Режим установлен: {message.text}.")
     if selected_mode == "light":
         await light_start(message, state)
+        return
+
+    await message.answer(
+        "Expert режим активирован. Пришлите описание товара с техническими параметрами "
+        "(мощность, объём, тип применения, материал и т.п.)."
+    )
 
 
 @router.message(Command("analysis"))
@@ -901,6 +913,7 @@ async def switch_mode_cb(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
     if action == "light":
+        await state.clear()
         await asyncio.to_thread(set_user_mode, DB_PATH, callback.message.chat.id, "light")  # type: ignore[union-attr]
         await light_start(callback.message, state)  # type: ignore[arg-type]
     else:
