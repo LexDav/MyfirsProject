@@ -26,6 +26,7 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
 )
 
 # =========================
@@ -693,17 +694,27 @@ async def help_command(message: Message) -> None:
 
 
 @router.message(Command("mode"))
-async def mode_command(message: Message) -> None:
+async def mode_command(message: Message, state: FSMContext) -> None:
+    await state.clear()
     await message.answer("Выберите режим: Light или Expert.", reply_markup=mode_keyboard())
 
 
 @router.message(F.text.lower().in_({"light", "expert"}))
 async def set_mode(message: Message, state: FSMContext) -> None:
     selected_mode = (message.text or "").lower()
+    await state.clear()
     await asyncio.to_thread(set_user_mode, DB_PATH, message.chat.id, selected_mode)
-    await message.answer(f"Режим установлен: {message.text}.")
+    await message.answer(
+        f"Режим установлен: {message.text}.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
     if selected_mode == "light":
         await light_start(message, state)
+    else:
+        await message.answer(
+            "Expert режим: пришлите описание товара (можно с тех.характеристиками). "
+            "Если знаете 10-значный код ТН ВЭД — вставьте его в текст."
+        )
 
 
 @router.message(Command("analysis"))
@@ -816,6 +827,14 @@ async def light_start(message: Message, state: FSMContext) -> None:
     )
 
 
+@router.message(LightStates.category)
+async def light_category_text(message: Message) -> None:
+    await message.answer(
+        "Для шага 1 используйте кнопки ниже: выберите группу товара.",
+        reply_markup=category_keyboard(),
+    )
+
+
 @router.callback_query(LightStates.category, F.data.startswith("cat:"))
 async def light_category_cb(callback: CallbackQuery, state: FSMContext) -> None:
     cat = callback.data.split(":", 1)[1]  # "8408" / "8418" / "other"
@@ -865,6 +884,24 @@ async def light_usage_cb(callback: CallbackQuery, state: FSMContext) -> None:
         "• для холодильного оборудования: объём камеры (л), тип (компрессорный/абсорбционный), температурный режим\n"
         "• для других товаров: любые технические детали, материал, назначение\n\n"
         "Можно написать коротко — главное, что знаете."
+    )
+
+
+@router.message(LightStates.usage)
+async def light_usage_text(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    category = data.get("category", "")
+
+    if "8408" in category:
+        kb = usage_keyboard_8408()
+    elif "8418" in category:
+        kb = usage_keyboard_8418()
+    else:
+        kb = usage_keyboard_other()
+
+    await message.answer(
+        "Для шага 2 используйте кнопки: выберите сферу применения товара.",
+        reply_markup=kb,
     )
 
 
@@ -940,6 +977,12 @@ async def fallback(message: Message) -> None:
         await message.answer(f"{response}\n\nОценка риска неверной классификации: {risk}.")
         if results[0].code == "0000000000":
             await suggest_codes_flow(message, text)
+        return
+
+    if mode == "light":
+        await message.answer(
+            "Light режим активен. Для старта используйте /classify и отвечайте через кнопки."
+        )
         return
 
     await message.answer("Не удалось распознать команду. Используйте /help.")
