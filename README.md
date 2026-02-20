@@ -27,7 +27,7 @@
 ## Шаг 2. Установить зависимости
 
 ```bash
-cd "TG Bot VED"
+cd /workspace/MyfirsProject
 pip install -r requirements.txt
 ```
 
@@ -76,7 +76,7 @@ OPENAI_MODEL=gpt-5.2
 Это нужно сделать **один раз** перед первым запуском (и повторить при обновлении PDF).
 
 ```bash
-python import_codes.py
+python import_codes2.py
 ```
 
 Скрипт читает файл `ru.84_2022_21.09.2025.pdf` и загружает коды в `bot.db`.
@@ -99,7 +99,7 @@ PDF: ru.84_2022_21.09.2025.pdf
 # В .env установить:
 TARGET_GROUPS=8408,8418
 # Затем:
-python import_codes.py
+python import_codes2.py
 ```
 
 ---
@@ -107,7 +107,7 @@ python import_codes.py
 ## Шаг 5. Запустить бота
 
 ```bash
-python bot_with_check_updated.py
+python bot_with_check_updated2.py
 ```
 
 Ожидаемый вывод в консоли:
@@ -126,7 +126,7 @@ python bot_with_check_updated.py
 Перед UAT/ручной приёмкой рекомендуется выполнить базовые проверки:
 
 ```bash
-python -m py_compile bot_with_check_updated.py import_codes.py
+python -m py_compile bot_with_check_updated2.py import_codes2.py
 pytest -q
 ```
 
@@ -195,14 +195,14 @@ pytest -q
 **Вариант 1 — screen:**
 ```bash
 screen -S tnved-bot
-python bot_with_check_updated.py
+python bot_with_check_updated2.py
 # Ctrl+A, затем D — отключиться от сессии
 # screen -r tnved-bot — вернуться
 ```
 
 **Вариант 2 — nohup:**
 ```bash
-nohup python bot_with_check_updated.py > bot.log 2>&1 &
+nohup python bot_with_check_updated2.py > bot.log 2>&1 &
 tail -f bot.log   # смотреть логи
 ```
 
@@ -217,7 +217,7 @@ tail -f bot.log   # смотреть логи
 → Проверить, что файл `ru.84_2022_21.09.2025.pdf` находится в той же папке, или указать путь в `.env`: `PDF_PATH=/полный/путь/к/файлу.pdf`
 
 **`В таблице tnved нет кодов`** (ответ бота)
-→ Запустить `python import_codes.py` для загрузки кодов
+→ Запустить `python import_codes2.py` для загрузки кодов
 
 **OpenAI ошибка в логах**
 → Проверить валидность `OPENAI_API_KEY` и доступность API. Бот продолжит работу на поиске по ключевым словам.
@@ -231,8 +231,8 @@ tail -f bot.log   # смотреть логи
 
 ```
 TG Bot VED/
-├── bot_with_check_updated.py   # основной код бота
-├── import_codes.py             # загрузка кодов из PDF в БД
+├── bot_with_check_updated2.py  # основной код бота
+├── import_codes2.py            # загрузка кодов из PDF в БД
 ├── ru.84_2022_21.09.2025.pdf   # ТН ВЭД ЕАЭС (источник кодов)
 ├── requirements.txt            # зависимости Python
 ├── .env.example                # шаблон переменных окружения

@@ -333,6 +333,11 @@ def assess_expert_input(text: str) -> bool:
     """
     stripped = (text or "").strip()
 
+    # Быстрый проход: если в тексте уже есть 10-значный код ТН ВЭД,
+    # можно сразу переходить к проверке по БД даже при коротком описании.
+    if CODE10_RE.search(stripped):
+        return True
+
     # 1. Минимальная длина
     if len(stripped) < 20:
         return False
@@ -697,7 +702,7 @@ async def mode_command(message: Message) -> None:
     await message.answer("Выберите режим: Light или Expert.", reply_markup=mode_keyboard())
 
 
-@router.message(F.text.lower().in_({"light", "expert"}))
+@router.message(F.text & F.text.lower().in_({"light", "expert"}))
 async def set_mode(message: Message, state: FSMContext) -> None:
     selected_mode = (message.text or "").lower()
     await asyncio.to_thread(set_user_mode, DB_PATH, message.chat.id, selected_mode)
