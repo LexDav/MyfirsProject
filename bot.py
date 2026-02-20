@@ -144,6 +144,7 @@ WELCOME_AND_COMMANDS = (
     "/npa — список НПА\n"
     "/npa <номер> — детали НПА\n"
     "/analysis — аналитика по рискам и логистике\n"
+    "/codes — справочник кодов ТН ВЭД\n"
     "/history — история запросов\n"
     "/cancel — завершить диалог"
 )
@@ -284,6 +285,31 @@ def assess_risk(confidence: float) -> str:
 def chunk_message(text: str, chunk_size: int = 3500) -> list[str]:
     return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
+
+
+def format_known_codes() -> str:
+    """Return a formatted list of currently available TN VED codes in this prototype."""
+    lines = [
+        "Справочник кодов ТН ВЭД (доступные в прототипе):",
+    ]
+    for keyword, code, title in KEYWORD_MAP:
+        lines.append(f"{code} — {title} (ключ: {keyword})")
+    lines.append(
+        "\nВажно: полный официальный классификатор ТН ВЭД ЕАЭС очень большой и в этом прототипе не встроен целиком. "
+        "Сейчас команда /codes показывает коды, доступные для автоклассификации в боте."
+    )
+    return "\n".join(lines)
+
+
+def get_full_codes_file_path() -> str:
+    """Get optional external file path with full TN VED codes registry."""
+    return os.getenv("TNVED_CODES_FILE", "")
+
+
+def load_full_codes_from_file(path: str) -> list[str]:
+    """Load full code lines from text file, one code entry per line."""
+    with open(path, encoding="utf-8") as file:
+        return [line.strip() for line in file if line.strip()]
 
 def mode_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
@@ -508,6 +534,26 @@ async def check_code(message: Message, command: CommandObject) -> None:
 @router.message(Command("npa"))
 async def npa_command(message: Message) -> None:
     await message.answer("Список НПА доступен в полной версии прототипа.")
+
+
+@router.message(Command("codes"))
+async def codes_command(message: Message) -> None:
+    full_codes_file = get_full_codes_file_path()
+
+    if full_codes_file and os.path.exists(full_codes_file):
+        try:
+            rows = await asyncio.to_thread(load_full_codes_from_file, full_codes_file)
+        except OSError:
+            rows = []
+
+        if rows:
+            text = "Полный справочник кодов ТН ВЭД:\n" + "\n".join(rows)
+            for chunk in chunk_message(text):
+                await message.answer(chunk)
+            return
+
+    for chunk in chunk_message(format_known_codes()):
+        await message.answer(chunk)
 
 
 @router.message(Command("history"))
