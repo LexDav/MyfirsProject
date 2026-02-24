@@ -6,3 +6,4 @@
 - code_parts/bot_with_check_updated2_part4.py
 - code_parts/bot_with_check_updated2_part5.py
 - code_parts/bot_with_check_updated2_part6.py
+- code_parts/bot_with_check_updated2_part7.py

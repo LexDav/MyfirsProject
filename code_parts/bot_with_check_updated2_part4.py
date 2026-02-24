@@ -1,204 +1,153 @@
 # AUTO-GENERATED PART 4
 # Source: bot_with_check_updated2.py
-# Lines: 601-800
+# Lines: 450-598
 
-    def conf_label(conf: float) -> str:
-        if conf >= 0.8:
-            return "Высокая"
-        if conf >= 0.6:
-            return "Средняя"
-        return "Низкая"
 
-    lines: list[str] = [
-        "| Код | Наименование позиции | Вероятность | Ставка пошлины |",
-        "|-----|---------------------|-------------|----------------|",
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    # Ужимаем список кандидатов в JSON
+    cand_payload = [{"code": c, "title": t} for c, t in candidates[:20]]
+
+    instructions = (
+        "Ты помощник по классификации ТН ВЭД ЕАЭС. "
+        "Нужно выбрать наиболее подходящие коды только из списка кандидатов. "
+        "Верни ТОЛЬКО JSON (без текста вокруг) формата: "
+        '{"items":[{"code":"...","reason":"..."}]}. '
+        "items должен содержать 3-5 элементов. "
+        "Причина короткая (1 строка) и основана на признаках из описания пользователя и названии позиции."
+    )
+
+    user_input = {
+        "user_text": user_text,
+        "candidates": cand_payload
+    }
+
+    response_schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": top_k,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "code": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["code", "reason"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["items"],
+        "additionalProperties": False,
+    }
+
+    try:
+        resp = client.responses.create(
+            model=OPENAI_MODEL,
+            input=json.dumps(user_input, ensure_ascii=False),
+            instructions=instructions,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "tnved_rank_candidates",
+                    "schema": response_schema,
+                    "strict": True,
+                }
+            },
+        )
+    except Exception as e:
+        logger.error("Ошибка OpenAI API: %s", e)
+        return [(c, t, "LLM временно недоступен, показаны кандидаты по БД.") for c, t in candidates[:top_k]]
+
+    # output_text — стандартное поле Responses API
+    text = getattr(resp, "output_text", None)
+    if not text:
+        try:
+            text = json.dumps(resp.model_dump(), ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = ""
+
+    # Пытаемся извлечь JSON
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # если модель добавила лишнее — берём первый валидный JSON-блок
+        j1 = text.find("{")
+        j2 = text.rfind("}")
+        if j1 != -1 and j2 != -1 and j2 > j1:
+            try:
+                data = json.loads(text[j1 : j2 + 1])
+            except json.JSONDecodeError:
+                logger.warning("Не удалось распарсить ответ LLM: %s", text[:200])
+                return [(c, t, "LLM ответ не распознан, показаны кандидаты по БД.") for c, t in candidates[:top_k]]
+        else:
+            logger.warning("LLM вернул неожиданный формат: %s", text[:200])
+            return [(c, t, "LLM ответ не распознан, показаны кандидаты по БД.") for c, t in candidates[:top_k]]
+
+    items = data.get("items", []) if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        logger.warning("LLM вернул items не-массив: %r", type(items))
+        return [(c, t, "LLM ответ не распознан, показаны кандидаты по БД.") for c, t in candidates[:top_k]]
+
+    chosen = []
+    cand_map = {c: t for c, t in candidates}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        code = str(it.get("code", "")).strip()
+        reason = str(it.get("reason", "")).strip() or "—"
+        if re.fullmatch(r"\d{10}", code) and code in cand_map:
+            chosen.append((code, cand_map[code], reason))
+        if len(chosen) >= top_k:
+            break
+
+    if not chosen:
+        return [(c, t, "Подбор по ключевым словам (LLM не выбрал коды).") for c, t in candidates[:top_k]]
+
+    return chosen
+
+
+# =========================
+# CLASSIFICATION LOGIC (MVP)
+# =========================
+
+def classify_text_with_db(db_path: str, text: str) -> list[ClassificationResult]:
+    """
+    Проверяет, содержит ли текст 10-значный код ТН ВЭД, и ищет его в БД.
+    Работает с любым кодом ТН ВЭД (не ограничен группами 8408/8418).
+    """
+    raw = (text or "").strip()
+
+    # 1) если пользователь ввёл ровно 10 цифр
+    if raw.isdigit() and len(raw) == 10:
+        title, duty = tnved_lookup_with_rate(db_path, raw)
+        if title != "Код не найден":
+            return [ClassificationResult(raw, title, 0.92, f"Код найден. Ставка: {duty}")]
+        return [ClassificationResult(raw, "Код не найден в вашей БД (tnved).", 0.35, "Нет записи в таблице tnved")]
+
+    # 2) если код "спрятан" в тексте
+    # Дополнительная проверка: первые 2 цифры должны быть в диапазоне 01–97 (группы ТН ВЭД),
+    # чтобы не ловить номера телефонов и другие 10-значные числа.
+    m = CODE10_RE.search(raw)
+    if m:
+        code10 = m.group(1)
+        group = int(code10[:2])
+        if 1 <= group <= 97:
+            title, duty = tnved_lookup_with_rate(db_path, code10)
+            if title != "Код не найден":
+                return [ClassificationResult(code10, title, 0.90, f"Код найден в тексте. Ставка: {duty}")]
+            return [ClassificationResult(code10, "Код найден в тексте, но отсутствует в БД (tnved).", 0.35, "Нет записи")]
+
+    # 3) иначе — код не обнаружен, нужен подбор
+    return [
+        ClassificationResult(
+            "0000000000",
+            "Требуется уточнение классификации",
+            0.45,
+            "Недостаточно признаков: нужен 10-значный код или технические параметры.",
+        )
     ]
 
-    for r in results:
-        title = r.title.replace("|", "/")
-        duty = "—"
-        if re.fullmatch(r"\d{10}", r.code) and r.code != "0000000000":
-            ru_title, duty = tnved_lookup_with_rate(DB_PATH, r.code)
-            title = ru_title.replace("|", "/")
-        lines.append(f"| {r.code} | {title} | {conf_label(r.confidence)} | {duty} |")
-
-    reasons = "\n".join([f"• {r.code}: {r.explanation}" for r in results])
-    return "\n".join(lines) + f"\n\nОбоснование:\n{reasons}" + LEGAL_DISCLAIMER
-
-
-def assess_risk(confidence: float) -> str:
-    if confidence >= 0.8:
-        return "низкая"
-    if confidence >= 0.6:
-        return "средняя"
-    return "высокая"
-
-
-def chunk_message(text: str, chunk_size: int = 3500) -> list[str]:
-    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
-
-
-async def suggest_codes_flow(message: Message, user_text: str) -> None:
-    """
-    1) достаём кандидатов из БД
-    2) (если есть OpenAI) ранжируем
-    3) выдаём пользователю 3–5 вариантов
-    """
-    candidates = await asyncio.to_thread(tnved_search_candidates, DB_PATH, user_text, 15)
-    if not candidates:
-        rnd = await asyncio.to_thread(tnved_random, DB_PATH, 5)
-        if not rnd:
-            await message.answer("В таблице tnved нет кодов. Сначала импортируйте коды в bot.db.")
-            return
-        text = "Не удалось подобрать по описанию. Примеры кодов из базы:\n"
-        text += "\n".join([f"{c} — {t}" for c, t in rnd])
-        await message.answer(text)
-        return
-
-    ranked = await asyncio.to_thread(llm_rank_candidates, user_text, candidates, 5)
-
-    lines = [
-        "Возможные коды по вашему описанию (предварительно):",
-        "| Код | Наименование позиции | Ставка пошлины | Почему |",
-        "|-----|---------------------|----------------|--------|",
-    ]
-    for code, title, reason in ranked:
-        ru_title, duty = await asyncio.to_thread(tnved_lookup_with_rate, DB_PATH, code)
-        safe_title = (ru_title or title).replace("|", "/")
-        safe_reason = reason.replace("|", "/")
-        lines.append(f"| {code} | {safe_title} | {duty} | {safe_reason} |")
-
-    lines.append(
-        "\nВажно: это предварительная подсказка по описанию. "
-        "Для точной классификации необходимы технические параметры "
-        "(тип, назначение, мощность/объём, материал и т.п.) и товаросопроводительные документы."
-        + LEGAL_DISCLAIMER
-    )
-
-    await message.answer("\n\n".join(lines))
-
-
-# =========================
-# UI helpers
-# =========================
-
-def _inline(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
-    """Строит InlineKeyboardMarkup из списка рядов [(label, callback_data), ...]."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=label, callback_data=data) for label, data in row]
-            for row in rows
-        ]
-    )
-
-
-def category_keyboard() -> InlineKeyboardMarkup:
-    return _inline([
-        [("Двигатель внутреннего сгорания (гр. 8408)", "cat:8408")],
-        [("Холодильное / морозильное оборудование (гр. 8418)", "cat:8418")],
-        [("Другой товар / не знаю", "cat:other")],
-    ])
-
-
-def usage_keyboard_8408() -> InlineKeyboardMarkup:
-    return _inline([
-        [("Промышленное оборудование", "use:industrial"), ("Морское / речное судно", "use:marine")],
-        [("Транспортное средство", "use:transport"), ("Сельхозтехника", "use:agriculture")],
-        [("Другое / не знаю", "use:other")],
-    ])
-
-
-def usage_keyboard_8418() -> InlineKeyboardMarkup:
-    return _inline([
-        [("Бытовой холодильник / морозильник", "use:household")],
-        [("Промышленное / торговое оборудование", "use:commercial")],
-        [("Транспортный рефрижератор", "use:transport")],
-        [("Другое / не знаю", "use:other")],
-    ])
-
-
-def usage_keyboard_other() -> InlineKeyboardMarkup:
-    return _inline([
-        [("Промышленное", "use:industrial"), ("Бытовое", "use:household")],
-        [("Другое / не знаю", "use:other")],
-    ])
-
-
-def mode_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="Light"), KeyboardButton(text="Expert")]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
-def switch_to_light_keyboard() -> InlineKeyboardMarkup:
-    """Кнопки при недостаточном описании в Expert-режиме."""
-    return _inline([
-        [("Перейти в Light-режим (опросник)", "switch:light")],
-        [("Дополнить описание и попробовать снова", "switch:retry")],
-    ])
-
-
-# =========================
-# Router / state
-# =========================
-
-router = Router()
-
-
-# =========================
-# Handlers
-# =========================
-
-@router.message(Command("start"))
-async def start(message: Message, state: FSMContext) -> None:
-    await asyncio.to_thread(
-        ensure_user,
-        DB_PATH,
-        message.chat.id,
-        message.from_user.username if message.from_user else None,
-    )
-    await state.clear()
-    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    await message.answer(WELCOME_AND_COMMANDS, reply_markup=mode_keyboard())
-
-
-@router.message(Command("help"))
-async def help_command(message: Message) -> None:
-    await message.answer(WELCOME_AND_COMMANDS, reply_markup=mode_keyboard())
-
-
-@router.message(Command("mode"))
-async def mode_command(message: Message) -> None:
-    await message.answer("Выберите режим: Light или Expert.", reply_markup=mode_keyboard())
-
-
-@router.message(F.text.lower().in_({"light", "expert"}))
-async def set_mode(message: Message, state: FSMContext) -> None:
-    selected_mode = (message.text or "").lower()
-    await asyncio.to_thread(set_user_mode, DB_PATH, message.chat.id, selected_mode)
-    await message.answer(f"Режим установлен: {message.text}.")
-    if selected_mode == "light":
-        await light_start(message, state)
-
-
-@router.message(Command("analysis"))
-async def analysis_command(message: Message) -> None:
-    for chunk in chunk_message(ANALYSIS_TEXT):
-        await message.answer(chunk)
-
-
-@router.message(Command("cancel"))
-async def cancel(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await message.answer("Диалог завершён. Данные сброшены.")
-
-
-@router.message(Command("history"))
-async def history(message: Message) -> None:
-    rows = await asyncio.to_thread(get_history, DB_PATH, message.chat.id, 10)
-    if not rows:
-        await message.answer("История пуста.")
-        return
-    lines = [f"{created_at} — {mode}: {description}\n{result}" for created_at, mode, description, result in rows]

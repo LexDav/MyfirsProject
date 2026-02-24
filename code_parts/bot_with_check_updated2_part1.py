@@ -1,6 +1,6 @@
 # AUTO-GENERATED PART 1
 # Source: bot_with_check_updated2.py
-# Lines: 1-200
+# Lines: 1-150
 
 import asyncio
 import json
@@ -152,53 +152,3 @@ CODE10_RE = re.compile(r"\b(\d{10})\b")
 # =========================
 
 @dataclass
-class ClassificationResult:
-    code: str
-    title: str
-    confidence: float
-    explanation: str
-
-
-class LightStates(StatesGroup):
-    category = State()   # шаг 1: группа товара (кнопки)
-    usage = State()      # шаг 2: сфера применения (кнопки)
-    params = State()     # шаг 3: технические параметры (свободный текст)
-
-
-# =========================
-# DB HELPERS
-# =========================
-
-def init_db(db_path: str) -> None:
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER UNIQUE,
-            username TEXT,
-            registered_at TEXT,
-            mode TEXT
-        )
-        """
-    )
-    # Миграция для старых БД: добавляем колонку mode, если её нет
-    cur.execute("PRAGMA table_info(users)")
-    user_cols = {row[1] for row in cur.fetchall()}
-    if "mode" not in user_cols:
-        cur.execute("ALTER TABLE users ADD COLUMN mode TEXT")
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS queries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            mode TEXT,
-            description TEXT,
-            result TEXT,
-            created_at TEXT
-        )
-        """
-    )
-    # таблица с кодами
