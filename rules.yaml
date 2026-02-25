@@ -1,0 +1,87 @@
+version: 6
+
+# =========================================================
+# SYSTEM_PROMPT_TN_VED_V6 - ALGORITHMIC RULES (machine-readable)
+# =========================================================
+# Этот файл предназначен для детерминированного (без LLM) применения
+# алгоритма из system_prompt_tn_ved_v6.md:
+# - Спуск по уровням 6 -> 8 -> 10 с полным перебором ветвей (PATCH-8)
+# - GATE-6 / GATE-8 / GATE-10
+# - Контракт вывода: 1 строка в таблице, альтернативы отдельным пунктом
+# - Режим Expert: вопросов не задавать (только рекомендация перейти в Light)
+
+output_contract:
+  table_columns: ["Код", "Наименование позиции", "Вероятность", "Ставка пошлины"]
+  max_table_rows: 1
+  allowed_modes: ["Light", "Expert"]
+  allowed_probability: ["Высокая", "Средняя", "Низкая"]
+  max_alternatives: 2
+
+disclaimer:
+  marker: "[DISCLAIMER]"
+  text: "Результат носит информационный характер и не является официальным решением таможенного органа. Для обязательного предварительного решения обратитесь в ФТС России (Приказ Минфина от 01.09.2020 № 181н)."
+
+light_flow:
+  step2_question: "Шаг 2 из 3 — Назначение товара.\nДля чего предназначен товар?"
+  ask_style: "list"   # list | one_by_one
+
+expert_policy:
+  no_questions: true
+  switch_to_light_text: "Если требуется уточнение признаков (объём, температура, тип, мощность и т.п.), перейдите в режим Light (/mode → Light) и ответьте на вопросы."
+
+tree_policy:
+  # PATCH-8: спуск по уровням
+  levels: [6, 8, 10]
+  gate6:
+    # если несколько веток близки по score — альтернативы
+    alt_if_score_diff_leq: 1
+  gate8:
+    # если на уровне 8 нужны уточнения: Light спрашивает, Expert понижает вероятность
+    require_clarification_if_missing: true
+  gate10:
+    # код должен существовать в ru.84; иначе откат
+    must_exist_in_ru84: true
+
+features:
+  # Базовые признаки (детектируются из текста)
+  definitions:
+    volume_liters:
+      detect_any: ["литр", "л", "объем", "объём"]
+      question: "Укажите объём (л)."
+    temperature:
+      detect_any: ["температур", "°", "градус", "c"]
+      question: "Укажите температурный режим (°C)."
+    cooling_type:
+      detect_any: ["компрессор", "абсорбц"]
+      question: "Укажите тип: компрессорный или абсорбционный?"
+    purpose_household:
+      detect_any: ["бытов", "домашн"]
+    purpose_commercial:
+      detect_any: ["торгов", "магазин", "витрина", "коммерч", "проф"]
+    purpose_transport:
+      detect_any: ["рефрижератор", "транспорт", "авто", "контейнер"]
+    power:
+      detect_regex: ["\b\d+\s*(квт|kw)\b", "\b\d+\s*(л\.\s*с\.|лс|hp)\b"]
+      question: "Укажите мощность (кВт или л.с.)."
+    displacement:
+      detect_regex: ["\b\d+\s*(см3|см³|cc)\b", "\b\d+(?:[\.,]\d+)?\s*л\b"]
+      question: "Укажите рабочий объём (см³ или л)."
+    fuel:
+      detect_any: ["дизел", "дизель", "бензин", "газ"]
+      question: "Укажите тип топлива (дизель/бензин/газ)."
+
+  # Требования по группам и уровням (GATE-8)
+  per_group:
+    "8408":
+      level8_require: ["power", "displacement", "fuel"]
+    "8418":
+      level8_require: ["volume_liters", "cooling_type", "temperature"]
+
+ranking:
+  # базовое ранжирование ветвей/листов
+  token_overlap_weight: 1
+  prefix_boost_weight: 2
+  # вероятность по итоговому score
+  probability_thresholds:
+    high: 6
+    medium: 3
